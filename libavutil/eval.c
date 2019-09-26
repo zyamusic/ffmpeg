@@ -155,7 +155,8 @@ struct AVExpr {
         e_pow, e_mul, e_div, e_add,
         e_last, e_st, e_while, e_taylor, e_root, e_floor, e_ceil, e_trunc, e_round,
         e_sqrt, e_not, e_random, e_hypot, e_gcd,
-        e_if, e_ifnot, e_print, e_bitand, e_bitor, e_between, e_clip, e_atan2
+        e_if, e_ifnot, e_print, e_bitand, e_bitor, e_between, e_clip, e_atan2,
+        e_elasticIn, e_elasticOut
     } type;
     double value; // is sign in other types
     union {
@@ -164,7 +165,7 @@ struct AVExpr {
         double (*func1)(void *, double);
         double (*func2)(void *, double, double);
     } a;
-    struct AVExpr *param[3];
+    struct AVExpr *param[4];
     double *var;
 };
 
@@ -287,6 +288,51 @@ static double eval_expr(Parser *p, AVExpr *e)
             p->var[0] = var0;
             return -low_v<high_v ? low : high;
         }
+        case e_elasticIn: {
+            double t = eval_expr(p, e->param[0]);
+            double b = eval_expr(p, e->param[1]);
+            double c = eval_expr(p, e->param[2]);
+            double d = eval_expr(p, e->param[3]);
+            double p, a, s, postFix;
+
+            if (isnan(t) || isnan(b) || isnan(c) || isnan(d))
+                return NAN;
+
+            if (t<=0)
+                return b;
+
+            if ((t/=d)>=1)
+                return b+c;
+
+            p = d*0.3;
+            a = c;
+            s = p/4;
+            postFix = a*pow(2,10*(t-=1));
+
+            return -(postFix * sin((t*d-s)*(2*M_PI)/p)) + b;
+        }
+        case e_elasticOut: {
+            double t = eval_expr(p, e->param[0]);
+            double b = eval_expr(p, e->param[1]);
+            double c = eval_expr(p, e->param[2]);
+            double d = eval_expr(p, e->param[3]);
+            double p, a, s;
+
+            if (isnan(t) || isnan(b) || isnan(c) || isnan(d))
+                return NAN;
+
+            if (t<=0)
+                return b;
+
+            if ((t/=d)>=1)
+                return b+c;
+
+            p = d*0.3;
+            a = c;
+            s = p/4;
+
+            return (a*pow(2,-10*t) * sin((t*d-s)*(2*M_PI)/p)+c+b);
+        }
         default: {
             double d = eval_expr(p, e->param[0]);
             double d2 = eval_expr(p, e->param[1]);
@@ -400,6 +446,10 @@ static int parse_primary(AVExpr **e, Parser *p)
         p->s++; // ","
         parse_expr(&d->param[2], p);
     }
+    if (p->s[0]== ',') {
+        p->s++; // ","
+        parse_expr(&d->param[3], p);
+    }
     if (p->s[0] != ')') {
         av_log(p, AV_LOG_ERROR, "Missing ')' or too many args in '%s'\n", s0);
         av_expr_free(d);
@@ -456,6 +506,8 @@ static int parse_primary(AVExpr **e, Parser *p)
     else if (strmatch(next, "between"))d->type = e_between;
     else if (strmatch(next, "clip"  )) d->type = e_clip;
     else if (strmatch(next, "atan2" )) d->type = e_atan2;
+    else if (strmatch(next, "elasticIn"  )) d->type = e_elasticIn;
+    else if (strmatch(next, "elasticOut"  )) d->type = e_elasticOut;
     else {
         for (i=0; p->func1_names && p->func1_names[i]; i++) {
             if (strmatch(next, p->func1_names[i])) {
@@ -657,6 +709,12 @@ static int verify_expr(AVExpr *e)
             return verify_expr(e->param[0]) &&
                    verify_expr(e->param[1]) &&
                    verify_expr(e->param[2]);
+        case e_elasticIn:
+        case e_elasticOut:
+            return verify_expr(e->param[0]) &&
+                   verify_expr(e->param[1]) &&
+                   verify_expr(e->param[2]) &&
+                   verify_expr(e->param[3]);
         default: return verify_expr(e->param[0]) && verify_expr(e->param[1]) && !e->param[2];
     }
 }
